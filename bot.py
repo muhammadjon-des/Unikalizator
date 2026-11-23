@@ -7,6 +7,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -143,7 +144,20 @@ async def main():
     bot = Bot(config.BOT_TOKEN, session=session)
     dp = Dispatcher()
     dp.include_router(router)
-    await dp.start_polling(bot)
+    # Flood control bo'lsa — qulamasdan kutib, qayta urinadi
+    while True:
+        try:
+            me = await bot.get_me()
+            info = await bot.get_webhook_info()
+            logging.info("Bot: @%s | webhook: %r", me.username, info.url)
+            await dp.start_polling(bot)
+            break
+        except TelegramRetryAfter as e:
+            logging.warning("Flood control: %s s kutilmoqda", e.retry_after)
+            await asyncio.sleep(e.retry_after + 2)
+        except Exception:
+            logging.exception("Polling xatosi, 10 s dan keyin qayta")
+            await asyncio.sleep(10)
 
 
 if __name__ == "__main__":
