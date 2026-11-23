@@ -144,7 +144,8 @@ async def main():
     bot = Bot(config.BOT_TOKEN, session=session)
     dp = Dispatcher()
     dp.include_router(router)
-    # Flood control bo'lsa — qulamasdan kutib, qayta urinadi
+    # Flood control bo'lsa — qulamasdan, har safar uzoqroq kutib qayta urinadi
+    backoff = 0
     while True:
         try:
             me = await bot.get_me()
@@ -153,8 +154,10 @@ async def main():
             await dp.start_polling(bot)
             break
         except TelegramRetryAfter as e:
-            logging.warning("Flood control: %s s kutilmoqda", e.retry_after)
-            await asyncio.sleep(e.retry_after + 2)
+            wait = min(max(e.retry_after, 30) * (2 ** backoff), 900)
+            backoff = min(backoff + 1, 5)
+            logging.warning("Flood control (%s s). %s s kutilmoqda", e.retry_after, wait)
+            await asyncio.sleep(wait)
         except Exception:
             logging.exception("Polling xatosi, 10 s dan keyin qayta")
             await asyncio.sleep(10)
