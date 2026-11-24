@@ -1,7 +1,12 @@
-FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+# Rasmiy telegram-bot-api server (2 GB gacha fayllar uchun)
+FROM aiogram/telegram-bot-api:latest AS tgapi
+
+FROM python:3.12-alpine
+RUN apk add --no-cache ffmpeg libstdc++ openssl zlib curl
+COPY --from=tgapi /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["python", "bot.py"]
+RUN chmod +x start.sh
+CMD ["./start.sh"]

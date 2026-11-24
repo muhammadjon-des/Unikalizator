@@ -114,7 +114,12 @@ async def process(status: Message, bot: Bot, data: dict):
         async with job_lock:
             await say("⬇️ Video yuklab olinmoqda...")
             src = job_dir / "source.mp4"
-            await bot.download(data["file_id"], destination=src)
+            if config.TELEGRAM_API_SERVER:
+                # Local server faylni o'z diskiga saqlaydi — ko'chirib olamiz (disk to'lmasin)
+                f = await bot.get_file(data["file_id"])
+                shutil.move(f.file_path, src)
+            else:
+                await bot.download(data["file_id"], destination=src)
 
             await say(f"⚙️ {data['count']} ta nusxa tayyorlanmoqda ({data['mode']})...")
             variants = await make_variants(src, data["count"], data["mode"], job_dir)

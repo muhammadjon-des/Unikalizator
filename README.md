@@ -31,7 +31,9 @@ Railway: repo'ni ulang — `Dockerfile` avtomatik ishlatiladi. Variables'ga `BOT
 ## Fayl hajmi cheklovlari
 
 Oddiy Telegram Bot API: **20 MB** gacha qabul qiladi, **50 MB** gacha yuboradi.
-Kattaroq videolar uchun [local Bot API server](https://github.com/tdlib/telegram-bot-api) ko'taring (u bilan 2 GB gacha) va `.env` da:
+Railway variant: `TELEGRAM_API_ID` va `TELEGRAM_API_HASH` qo'shilsa, konteyner ichida local Bot API server o'zi ishga tushadi (2 GB gacha). Bunda bot avval cloud API'dan `logOut` qilingan bo'lishi kerak.
+
+Boshqa hosting uchun [local Bot API server](https://github.com/tdlib/telegram-bot-api) ko'taring (u bilan 2 GB gacha) va `.env` da:
 ```
 TELEGRAM_API_SERVER=http://localhost:8081
 ```
