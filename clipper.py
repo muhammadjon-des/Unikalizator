@@ -126,6 +126,11 @@ async def _gemini(body: dict) -> dict:
                 busy = r.status_code in (429, 500, 503) or "demand" in last.lower() or "overloaded" in last.lower()
                 if r.status_code == 404:
                     break  # bunday model yo'q — keyingisiga
+                if "quota" in last.lower() or "billing" in last.lower():
+                    raise ClipError(
+                        "Gemini limiti tugadi (bepul tarif). AI Studio'da billing yoqing "
+                        "yoki qisqaroq video yuboring."
+                    )
                 if not busy:
                     raise ClipError(f"Gemini ({model}): {last}")
                 await asyncio.sleep(10 * (2 ** attempt))  # 10, 20, 40 s
