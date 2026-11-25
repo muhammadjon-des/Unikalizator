@@ -308,6 +308,11 @@ async def process(status: Message, bot: Bot, data: dict):
                         lines.append(f"✅ {i}: {await ig.permalink(media_id) or media_id}")
                     except InstagramError as e:
                         lines.append(f"❌ {i}: {e}")
+                        low = str(e).lower()
+                        if "maximum" in low or "максимальн" in low:
+                            lines.append("⛔ Trial Reels limiti tugadi — qolganlari joylanmadi. Keyinroq urinib ko'ring.")
+                            PUBLIC_FILES.pop(name, None)
+                            break
                     finally:
                         PUBLIC_FILES.pop(name, None)
                     await asyncio.sleep(5)
@@ -441,3 +446,11 @@ async def cut_clips(status: Message, bot: Bot, chat_id: int, speaker: str):
         await say(f"❌ Xato: {e}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+@router.message(F.text)
+async def fallback_text(m: Message):
+    if not allowed(m.from_user):
+        return
+    logging.info("Tushunilmagan matn: %r", (m.text or "")[:200])
+    await m.answer("Video fayl yoki YouTube link yuboring. /start — yordam")
