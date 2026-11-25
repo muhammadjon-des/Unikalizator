@@ -71,9 +71,10 @@ class InstagramClient:
             uri = f"https://rupload.facebook.com/ig-api-upload/{config.IG_API_VERSION}/{container_id}"
         size = path.stat().st_size
 
-        def chunks():
+        async def chunks():
+            # AsyncClient faqat async generator qabul qiladi
             with open(path, "rb") as f:
-                while b := f.read(8 * 1024 * 1024):
+                while b := await asyncio.to_thread(f.read, 8 * 1024 * 1024):
                     yield b
 
         r = await self.http.post(
