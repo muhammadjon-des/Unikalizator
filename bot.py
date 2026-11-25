@@ -356,9 +356,6 @@ async def main():
             await asyncio.sleep(10)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
-
 
 # ---------------- YouTube -> Reels ----------------
 # chat_id -> {"url", "speakers", "clips"}
@@ -454,3 +451,7 @@ async def fallback_text(m: Message):
         return
     logging.info("Tushunilmagan matn: %r", (m.text or "")[:200])
     await m.answer("Video fayl yoki YouTube link yuboring. /start — yordam")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
