@@ -152,13 +152,17 @@ async def _gemini(body: dict) -> dict:
 
 async def video_duration(url: str) -> float | None:
     """yt-dlp bilan davomiylik (yuklamasdan). Bloklansa — None."""
+    import logging
+    import tempfile
     try:
-        out = await _run(
-            "yt-dlp", "--no-playlist", "--skip-download", "--js-runtimes", "node",
-            "--print", "duration", url, timeout=90,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = await _run(
+                "yt-dlp", "--no-playlist", "--skip-download", "--js-runtimes", "node",
+                *_cookies_file(Path(tmp)), "--print", "duration", url, timeout=90,
+            )
         return float(out.strip().splitlines()[-1])
-    except Exception:
+    except Exception as e:
+        logging.warning("duration olinmadi: %s", str(e)[-200:])
         return None
 
 
@@ -229,6 +233,8 @@ async def analyze(url: str, progress=None) -> dict:
     owner_clips, other_clips = [], []
     owner_seen = False
     for i, (a, b) in enumerate(ranges, 1):
+        import logging
+        logging.info("Gemini tahlil: %s/%s qism (%s-%s s)", i, len(ranges), a, b)
         if progress and len(ranges) > 1:
             await progress(f"🧠 Tahlil: {i}/{len(ranges)}-qism ({a // 60}-{b // 60} daqiqa)...")
         try:
