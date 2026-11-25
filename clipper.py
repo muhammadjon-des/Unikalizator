@@ -360,11 +360,122 @@ async def render(raw: Path, clip: dict, clip_start: float, out: Path) -> Path:
     return out
 
 
+REFINE_PROMPT = """This is a {dur:.0f}-second segment cut from a long Uzbek podcast (may contain Russian).
+{owner_note}
+Tasks:
+1. Inside this segment find the single best self-contained moment for Instagram Reels where {who} is speaking:
+   20-60 seconds, starts exactly at the beginning of a sentence, ends exactly at the end of a sentence.
+2. "hook": on-screen title in Uzbek Latin, max 7 words, that ACCURATELY reflects what is actually said in that moment
+   (no invented facts), catchy, no emojis, no quotes.
+3. "why": one short Uzbek sentence why it will perform.
+4. "faces": for every second from start to end: {{"t": seconds from the segment start, "x": horizontal centre (0..1) of
+   {who_face} face in the frame}}. Be precise: x is measured on the full frame width. If that person is not visible,
+   use the face of whoever is on screen.
+5. "owner_speaks": true/false — does {who} actually speak in the chosen moment.
+Return ONLY JSON: {{"owner_speaks":true,"start":0,"end":0,"hook":"...","why":"...","faces":[{{"t":0,"x":0.5}}]}}
+Times are seconds from the start of THIS segment."""
+
+
+async def _proxy(src: Path, work: Path) -> Path:
+    """Gemini uchun kichik nusxa (360p, past bitreyt) — inline yuborish uchun."""
+    out = work / f"proxy_{uuid.uuid4().hex[:6]}.mp4"
+    await _run(
+        "ffmpeg", "-y", "-v", "error", "-i", str(src),
+        "-vf", "scale=-2:360,fps=5", "-c:v", "libx264", "-preset", "veryfast", "-crf", "33",
+        "-c:a", "aac", "-b:a", "48k", "-ac", "1", str(out),
+    )
+    return out
+
+
+async def refine(raw: Path, work: Path) -> dict | None:
+    """Kesilgan oynani Gemini'ga qayta ko'rsatib: aniq start/end, mos hook, yuz joylashuvi."""
+    import base64
+    _, _, dur = await _size(raw)
+    proxy = await _proxy(raw, work)
+    if proxy.stat().st_size > 18 * 1024 * 1024:
+        return None
+    photos = _photo_parts()
+    if photos:
+        owner_note = "The image(s) before the video show the channel OWNER."
+        who, who_face = "the OWNER (from the reference photos)", "the OWNER's"
+    else:
+        owner_note, who, who_face = "", "the main speaker", "the speaking person's"
+    body = {
+        "contents": [{"parts": photos + [
+            {"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(proxy.read_bytes()).decode()}},
+            {"text": REFINE_PROMPT.format(dur=dur, owner_note=owner_note, who=who, who_face=who_face)},
+        ]}],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.3},
+    }
+    try:
+        data = await _gemini(body)
+        text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
+        r = _parse_json(text)
+        r["start"], r["end"] = float(r["start"]), float(r["end"])
+        if not (5 <= r["end"] - r["start"] <= 90) or r["start"] < 0 or r["end"] > dur + 1:
+            return None
+        return r
+    except Exception as e:
+        import logging
+        logging.warning("refine failed: %s", e)
+        return None
+
+
+def _faces_to_shots(faces: list, offset: float) -> list:
+    """Har soniyalik x -> shots: kichik tebranishlarni silliqlab, faqat katta sakrashda kadrni almashtiramiz."""
+    pts = []
+    for f in sorted(faces or [], key=lambda f: float(f.get("t", 0))):
+        try:
+            pts.append((float(f["t"]) + offset, min(max(float(f["x"]), 0.0), 1.0)))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not pts:
+        return []
+    shots = [{"t": pts[0][0], "x": pts[0][1]}]
+    group = [pts[0][1]]
+    for t, x in pts[1:]:
+        cur = sorted(group)[len(group) // 2]
+        if abs(x - cur) > 0.12:           # kamera almashdi / boshqa kadr
+            shots[-1]["x"] = cur
+            shots.append({"t": t, "x": x})
+            group = [x]
+        else:
+            group.append(x)
+    shots[-1]["x"] = sorted(group)[len(group) // 2]
+    return shots
+
+
+async def _finish(raw: Path, win_start: float, clip: dict, work: Path) -> Path:
+    """raw = keng oyna. Refine bo'lsa — uni ishlatamiz, bo'lmasa Gemini'ning birinchi taxmini."""
+    r = await refine(raw, work)
+    if r:
+        if r.get("owner_speaks") is False and me_photos():
+            raise ClipError("bu bo'lakda siz gapirmayapsiz — o'tkazib yuborildi")
+        s_rel, e_rel = max(r["start"] - 0.2, 0), r["end"] + 0.3
+        clip["start"], clip["end"] = win_start + s_rel, win_start + e_rel
+        clip["hook"] = r.get("hook") or clip.get("hook", "")
+        clip["why"] = r.get("why") or clip.get("why", "")
+        shots = _faces_to_shots(r.get("faces"), win_start)
+        if shots:
+            clip["shots"] = shots
+    else:
+        s_rel = max(clip["start"] - 0.3 - win_start, 0)
+        e_rel = clip["end"] + 0.4 - win_start
+    seg = work / f"seg_{uuid.uuid4().hex[:6]}.mp4"
+    await _run(
+        "ffmpeg", "-y", "-v", "error", "-ss", f"{s_rel:.2f}", "-i", str(raw), "-t", f"{e_rel - s_rel:.2f}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(seg),
+    )
+    return await render(seg, clip, win_start + s_rel, work / f"reel_{uuid.uuid4().hex[:8]}.mp4")
+
+
+PAD = 10.0  # aniqlashtirish uchun klip atrofidan qo'shimcha soniyalar
+
+
 async def make_clip(url: str, clip: dict, work: Path) -> Path:
-    start = max(clip["start"] - 0.3, 0)
-    end = clip["end"] + 0.4
-    raw = await download_section(url, start, end, work)
-    return await render(raw, clip, start, work / f"reel_{uuid.uuid4().hex[:8]}.mp4")
+    win_start = max(clip["start"] - PAD, 0)
+    raw = await download_section(url, win_start, clip["end"] + PAD, work)
+    return await _finish(raw, win_start, clip, work)
 
 
 def is_blocked(err: str) -> bool:
@@ -374,12 +485,12 @@ def is_blocked(err: str) -> bool:
 
 async def cut_from_file(src: Path, clip: dict, work: Path) -> Path:
     """YouTube o'rniga foydalanuvchi yuborgan asl fayldan kesish."""
-    start = max(clip["start"] - 0.3, 0)
-    dur = clip["end"] + 0.4 - start
-    raw = work / f"seg_{uuid.uuid4().hex[:8]}.mp4"
+    win_start = max(clip["start"] - PAD, 0)
+    dur = clip["end"] + PAD - win_start
+    raw = work / f"win_{uuid.uuid4().hex[:8]}.mp4"
     await _run(
-        "ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(src), "-t", f"{dur:.2f}",
+        "ffmpeg", "-y", "-v", "error", "-ss", f"{win_start:.2f}", "-i", str(src), "-t", f"{dur:.2f}",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-c:a", "aac", "-b:a", "192k",
         str(raw),
     )
-    return await render(raw, clip, start, work / f"reel_{uuid.uuid4().hex[:8]}.mp4")
+    return await _finish(raw, win_start, clip, work)
