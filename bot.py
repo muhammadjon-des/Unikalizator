@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramRetryAfter
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -16,12 +16,14 @@ from aiogram.types import (
 )
 
 import config
+from instagram import InstagramClient, InstagramError
 from uniquifier import make_variants
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
 WORK = Path(config.WORK_DIR)
 job_lock = asyncio.Lock()  # bir vaqtda bitta video — server yuklanib ketmasin
+ig = InstagramClient(config.IG_USER_ID, config.IG_ACCESS_TOKEN) if config.IG_ACCESS_TOKEN and config.IG_USER_ID else None
 
 MB = 1024 * 1024
 DOWNLOAD_LIMIT = 2000 * MB if config.TELEGRAM_API_SERVER else 20 * MB
@@ -31,6 +33,8 @@ UPLOAD_LIMIT = 2000 * MB if config.TELEGRAM_API_SERVER else 50 * MB
 class Flow(StatesGroup):
     count = State()
     mode = State()
+    dest = State()
+    caption = State()
 
 
 def kb(rows):
@@ -55,6 +59,24 @@ async def start(m: Message):
         "💡 Sifat buzilmasligi uchun videoni <b>fayl</b> qilib yuboring.",
         parse_mode="HTML",
     )
+    if ig:
+        try:
+            acc = await ig.account()
+            await m.answer(f"✅ Instagram ulangan: @{acc.get('username')}\n/limit — kunlik joylash limiti")
+        except InstagramError as e:
+            await m.answer(f"⚠️ Instagram ulanmadi: {e}")
+
+
+@router.message(Command("limit"))
+async def limit(m: Message):
+    if not allowed(m.from_user) or not ig:
+        return
+    try:
+        d = (await ig.publishing_limit())["data"][0]
+        total = d.get("config", {}).get("quota_total", "?")
+        await m.answer(f"24 soatda joylangan: {d.get('quota_usage')} / {total}")
+    except Exception as e:
+        await m.answer(f"Xato: {e}")
 
 
 @router.message(F.video | F.document)
@@ -69,7 +91,7 @@ async def got_video(m: Message, state: FSMContext):
             f"⚠️ Video {media.file_size // MB} MB. Bot {DOWNLOAD_LIMIT // MB} MB gacha qabul qiladi.\n"
             "Kattaroq videolar uchun local Bot API server kerak (README'da yozilgan)."
         )
-    await state.set_data({"file_id": media.file_id})
+    await state.set_data({"file_id": media.file_id, "orig_caption": m.caption or ""})
     await state.set_state(Flow.count)
     await m.reply("Nechta nusxa?", reply_markup=kb([[("3", "c:3"), ("4", "c:4"), ("5", "c:5")]]))
 
@@ -90,12 +112,60 @@ async def set_count(c: CallbackQuery, state: FSMContext):
 
 @router.callback_query(Flow.mode, F.data.startswith("m:"))
 async def set_mode(c: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    data["mode"] = c.data[2:]
-    await state.clear()
-    await c.message.edit_text("⏳ Boshladim...")
+    await state.update_data(mode=c.data[2:])
     await c.answer()
-    asyncio.create_task(process(c.message, c.bot, data))
+    if not ig:
+        return await start_job(c.message, c.bot, state, dest="tg")
+    await state.set_state(Flow.dest)
+    await c.message.edit_text(
+        "Nusxalarni qayerga?",
+        reply_markup=kb([
+            [("📩 Telegram'ga", "d:tg")],
+            [("🧪 Instagram Trial Reels", "d:ig")],
+            [("Ikkalasiga", "d:both")],
+        ]),
+    )
+
+
+@router.callback_query(Flow.dest, F.data.startswith("d:"))
+async def set_dest(c: CallbackQuery, state: FSMContext):
+    dest = c.data[2:]
+    await c.answer()
+    if dest == "tg":
+        return await start_job(c.message, c.bot, state, dest=dest)
+    await state.update_data(dest=dest)
+    await state.set_state(Flow.caption)
+    data = await state.get_data()
+    rows = [[("Captionsiz", "cap:none")]]
+    if data.get("orig_caption"):
+        rows.insert(0, [("Video captionini ishlatish", "cap:orig")])
+    await c.message.edit_text("Instagram uchun caption yozib yuboring yoki tanlang:", reply_markup=kb(rows))
+
+
+@router.callback_query(Flow.caption, F.data.startswith("cap:"))
+async def caption_btn(c: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await c.answer()
+    caption = data.get("orig_caption", "") if c.data == "cap:orig" else ""
+    await start_job(c.message, c.bot, state, dest=data["dest"], caption=caption)
+
+
+@router.message(Flow.caption, F.text)
+async def caption_text(m: Message, state: FSMContext):
+    data = await state.get_data()
+    msg = await m.answer("⏳")
+    await start_job(msg, m.bot, state, dest=data["dest"], caption=m.text)
+
+
+async def start_job(msg: Message, bot: Bot, state: FSMContext, dest: str, caption: str = ""):
+    data = await state.get_data()
+    await state.clear()
+    data.update(dest=dest, caption=caption)
+    try:
+        await msg.edit_text("⏳ Boshladim...")
+    except Exception:
+        pass
+    asyncio.create_task(process(msg, bot, data))
 
 
 async def process(status: Message, bot: Bot, data: dict):
@@ -124,17 +194,35 @@ async def process(status: Message, bot: Bot, data: dict):
             await say(f"⚙️ {data['count']} ta nusxa tayyorlanmoqda ({data['mode']})...")
             variants = await make_variants(src, data["count"], data["mode"], job_dir)
 
-            for i, v in enumerate(variants, 1):
-                await say(f"📤 {i}/{len(variants)} yuborilmoqda...")
-                if v.stat().st_size > UPLOAD_LIMIT:
-                    await status.answer(f"❌ {i}-nusxa {v.stat().st_size // MB} MB — Telegram limitidan katta.")
-                    continue
-                # Fayl sifatida — Telegram hech narsani siqmaydi
-                await status.answer_document(
-                    FSInputFile(v, filename=f"video_{i}.mp4"),
-                    caption=f"#{i}",
-                )
-            await say(f"✅ Tayyor: {len(variants)} ta unikal nusxa.")
+            dest = data.get("dest", "tg")
+            if dest in ("tg", "both"):
+                for i, v in enumerate(variants, 1):
+                    await say(f"📤 Telegram: {i}/{len(variants)} yuborilmoqda...")
+                    if v.stat().st_size > UPLOAD_LIMIT:
+                        await status.answer(f"❌ {i}-nusxa {v.stat().st_size // MB} MB — Telegram limitidan katta.")
+                        continue
+                    # Fayl sifatida — Telegram hech narsani siqmaydi
+                    await status.answer_document(
+                        FSInputFile(v, filename=f"video_{i}.mp4"),
+                        caption=f"#{i}",
+                    )
+
+            lines = []
+            if dest in ("ig", "both") and ig:
+                for i, v in enumerate(variants, 1):
+                    await say("\n".join(lines + [f"🧪 Instagram: {i}/{len(variants)} yuklanmoqda..."]))
+                    try:
+                        media_id = await ig.post_trial_reel(v, data.get("caption", ""), config.TRIAL_STRATEGY)
+                        lines.append(f"✅ {i}: {await ig.permalink(media_id) or media_id}")
+                    except InstagramError as e:
+                        lines.append(f"❌ {i}: {e}")
+                    await asyncio.sleep(5)
+
+            done = f"✅ Tayyor: {len(variants)} ta unikal nusxa."
+            if lines:
+                ok = sum(l.startswith("✅") for l in lines)
+                done += f"\nTrial Reels: {ok}/{len(variants)} joylandi\n\n" + "\n".join(lines)
+            await say(done)
     except Exception as e:
         logging.exception("job failed")
         await say(f"❌ Xato: {e}")
