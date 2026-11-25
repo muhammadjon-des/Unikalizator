@@ -22,3 +22,7 @@ IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "")
 IG_API_VERSION = os.getenv("IG_API_VERSION", "v24.0")
 # MANUAL — followerlarga o'zingiz chiqarasiz; SS_PERFORMANCE — Instagram o'zi chiqaradi
 TRIAL_STRATEGY = os.getenv("TRIAL_STRATEGY", "MANUAL")
+
+# Instagram video_url uchun ochiq domen (Railway o'zi beradi) va port
+PUBLIC_DOMAIN = os.getenv("PUBLIC_DOMAIN") or os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+PORT = int(os.getenv("PORT", "8080"))

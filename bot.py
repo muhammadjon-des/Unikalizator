@@ -22,6 +22,32 @@ from uniquifier import make_variants
 logging.basicConfig(level=logging.INFO)
 router = Router()
 WORK = Path(config.WORK_DIR)
+# Instagram videoni ochiq URL'dan yuklab olishi uchun vaqtinchalik fayllar
+PUBLIC_FILES: dict[str, Path] = {}
+PUBLIC_BASE = (
+    f"https://{config.PUBLIC_DOMAIN}" if config.PUBLIC_DOMAIN else ""
+)
+
+
+async def serve_file(request):
+    from aiohttp import web
+    path = PUBLIC_FILES.get(request.match_info["name"])
+    if not path or not path.exists():
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={"Content-Type": "video/mp4"})
+
+
+async def start_file_server():
+    from aiohttp import web
+    app = web.Application()
+    app.router.add_get("/f/{name}", serve_file)
+    app.router.add_get("/", lambda r: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", config.PORT).start()
+    logging.info("Fayl server: %s (port %s)", PUBLIC_BASE or "-", config.PORT)
+
+
 job_lock = asyncio.Lock()  # bir vaqtda bitta video — server yuklanib ketmasin
 ig = InstagramClient(config.IG_USER_ID, config.IG_ACCESS_TOKEN) if config.IG_ACCESS_TOKEN and config.IG_USER_ID else None
 
@@ -211,11 +237,20 @@ async def process(status: Message, bot: Bot, data: dict):
             if dest in ("ig", "both") and ig:
                 for i, v in enumerate(variants, 1):
                     await say("\n".join(lines + [f"🧪 Instagram: {i}/{len(variants)} yuklanmoqda..."]))
+                    if not PUBLIC_BASE:
+                        lines.append(f"❌ {i}: PUBLIC_DOMAIN sozlanmagan")
+                        continue
+                    name = f"{uuid.uuid4().hex}.mp4"
+                    PUBLIC_FILES[name] = v
                     try:
-                        media_id = await ig.post_trial_reel(v, data.get("caption", ""), config.TRIAL_STRATEGY)
+                        media_id = await ig.post_trial_reel(
+                            v, data.get("caption", ""), config.TRIAL_STRATEGY, f"{PUBLIC_BASE}/f/{name}"
+                        )
                         lines.append(f"✅ {i}: {await ig.permalink(media_id) or media_id}")
                     except InstagramError as e:
                         lines.append(f"❌ {i}: {e}")
+                    finally:
+                        PUBLIC_FILES.pop(name, None)
                     await asyncio.sleep(5)
 
             done = f"✅ Tayyor: {len(variants)} ta unikal nusxa."
@@ -237,6 +272,7 @@ async def main():
     bot = Bot(config.BOT_TOKEN, session=session)
     dp = Dispatcher()
     dp.include_router(router)
+    await start_file_server()
     # Flood control bo'lsa — qulamasdan, har safar uzoqroq kutib qayta urinadi
     backoff = 0
     while True:

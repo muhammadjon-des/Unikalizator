@@ -54,13 +54,14 @@ class InstagramClient:
         )
         return _check(r)
 
-    async def _create_container(self, caption: str, trial_strategy: str | None) -> dict:
-        data = {
-            "media_type": "REELS",
-            "upload_type": "resumable",
-            "caption": caption,
-            "access_token": self.token,
-        }
+    async def _create_container(self, caption: str, trial_strategy: str | None,
+                                video_url: str | None = None) -> dict:
+        data = {"media_type": "REELS", "caption": caption, "access_token": self.token}
+        if video_url:
+            # Standard upload — trial_params faqat shu usulda ishlaydi
+            data["video_url"] = video_url
+        else:
+            data["upload_type"] = "resumable"
         if trial_strategy:
             data["trial_params"] = json.dumps({"graduation_strategy": trial_strategy})
         r = await self.http.post(f"{self.graph}/{self.user_id}/media", data=data)
@@ -125,8 +126,9 @@ class InstagramClient:
         except InstagramError:
             return None
 
-    async def post_trial_reel(self, path: Path, caption: str, trial_strategy: str) -> str:
-        c = await self._create_container(caption, trial_strategy)
-        await self._upload(c["id"], c.get("uri"), path)
+    async def post_trial_reel(self, path: Path, caption: str, trial_strategy: str,
+                              video_url: str) -> str:
+        """Trial Reel: Instagram videoni ochiq URL'dan o'zi yuklab oladi."""
+        c = await self._create_container(caption, trial_strategy, video_url=video_url)
         await self._wait_ready(c["id"])
         return await self._publish(c["id"])
