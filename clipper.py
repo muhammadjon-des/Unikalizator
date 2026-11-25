@@ -106,14 +106,20 @@ def _parse_json(text: str) -> dict:
     return json.loads(m.group(0))
 
 
+class QuotaError(ClipError):
+    pass
+
+
 async def _gemini(body: dict) -> dict:
-    """Band bo'lsa qayta urinadi va zaxira modelga o'tadi."""
+    """Band bo'lsa qayta urinadi, daqiqalik limitda kutadi, zaxira modelga o'tadi."""
     models = [config.GEMINI_MODEL] + [m for m in config.GEMINI_FALLBACK if m != config.GEMINI_MODEL]
     last = "noma'lum xato"
     async with httpx.AsyncClient(timeout=httpx.Timeout(900, connect=30)) as http:
         for model in models:
             api = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            for attempt in range(3):
+            quota_waits = 0
+            attempt = 0
+            while attempt < 3:
                 r = await http.post(api, headers={"x-goog-api-key": config.GEMINI_API_KEY}, json=body)
                 try:
                     data = r.json()
@@ -121,38 +127,60 @@ async def _gemini(body: dict) -> dict:
                     data = {"error": {"message": f"HTTP {r.status_code}: {r.text[:200]}"}}
                 if "error" not in data:
                     return data
-                err = data["error"]
-                last = err.get("message", str(err))
-                busy = r.status_code in (429, 500, 503) or "demand" in last.lower() or "overloaded" in last.lower()
+                last = data["error"].get("message", str(data["error"]))
+                low = last.lower()
                 if r.status_code == 404:
                     break  # bunday model yo'q — keyingisiga
-                if "quota" in last.lower() or "billing" in last.lower():
-                    raise ClipError(
-                        "Gemini limiti tugadi (bepul tarif). AI Studio'da billing yoqing "
-                        "yoki qisqaroq video yuboring."
-                    )
+                if "quota" in low or "billing" in low or "resource_exhausted" in low:
+                    # daqiqalik limit bo'lsa — 1 daqiqa kutish yetadi; kunlik bo'lsa — 2 urinishdan keyin to'xtaymiz
+                    if quota_waits < 2:
+                        quota_waits += 1
+                        await asyncio.sleep(65)
+                        continue
+                    break  # bu modelda kvota tugadi — keyingi modelga
+                busy = r.status_code in (500, 503) or "demand" in low or "overloaded" in low
                 if not busy:
                     raise ClipError(f"Gemini ({model}): {last}")
                 await asyncio.sleep(10 * (2 ** attempt))  # 10, 20, 40 s
+                attempt += 1
+    if "quota" in last.lower():
+        raise QuotaError("Gemini bepul limiti tugadi. Bir necha soatdan keyin yoki ertaga urinib ko'ring.")
     raise ClipError(f"Gemini hozir band, keyinroq urinib ko'ring ({last[:150]})")
 
 
-async def analyze(url: str) -> dict:
-    """Gemini'dan spikerlar va klip nomzodlarini oladi."""
-    if not config.GEMINI_API_KEY:
-        raise ClipError("GEMINI_API_KEY sozlanmagan")
+async def video_duration(url: str) -> float | None:
+    """yt-dlp bilan davomiylik (yuklamasdan). Bloklansa — None."""
+    try:
+        out = await _run(
+            "yt-dlp", "--no-playlist", "--skip-download", "--js-runtimes", "node",
+            "--print", "duration", url, timeout=90,
+        )
+        return float(out.strip().splitlines()[-1])
+    except Exception:
+        return None
+
+
+def _photo_parts() -> list[dict]:
     import base64
-    parts = []
-    photos = me_photos()
-    for p in photos:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(p.read_bytes()).decode()}})
-    parts.append({"file_data": {"file_uri": url, "mime_type": "video/*"}})
-    parts.append({"text": PROMPT + (ME_PROMPT if photos else "")})
+    return [
+        {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(p.read_bytes()).decode()}}
+        for p in me_photos()
+    ]
+
+
+async def _analyze_chunk(url: str, start: int | None, end: int | None) -> dict:
+    video = {"file_data": {"file_uri": url, "mime_type": "video/*"}}
+    note = ""
+    if start is not None:
+        video["video_metadata"] = {"start_offset": f"{start}s", "end_offset": f"{end}s"}
+        note = (f"\nYou are seeing only the segment {start}s-{end}s of the full video. "
+                "Return start/end/shots timestamps as ABSOLUTE seconds from the beginning of the FULL video.\n")
+    photos = _photo_parts()
     body = {
-        "contents": [{"parts": parts}],
+        "contents": [{"parts": photos + [video, {"text": PROMPT + note + (ME_PROMPT if photos else "")}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "mediaResolution": "MEDIA_RESOLUTION_LOW",  # uzun videolar uchun
+            "mediaResolution": "MEDIA_RESOLUTION_LOW",
             "temperature": 0.4,
         },
     }
@@ -161,18 +189,90 @@ async def analyze(url: str) -> dict:
         text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
     except (KeyError, IndexError):
         raise ClipError(f"Gemini bo'sh javob qaytardi: {str(data)[:300]}")
-    result = _parse_json(text)
+    res = _parse_json(text)
     clips = []
-    for c in result.get("clips", []):
+    for c in res.get("clips", []):
         try:
             s, e = float(c["start"]), float(c["end"])
         except (KeyError, TypeError, ValueError):
             continue
+        # Model segmentga nisbatan vaqt bergan bo'lsa — to'g'rilaymiz
+        if start and s < start - 5:
+            s, e = s + start, e + start
+            for sh in c.get("shots") or []:
+                try:
+                    sh["t"] = float(sh["t"]) + start
+                except (KeyError, TypeError, ValueError):
+                    pass
         if 8 <= e - s <= 120:
             c["start"], c["end"] = s, e
             clips.append(c)
-    result["clips"] = clips
-    return result
+    res["clips"] = clips
+    return res
+
+
+async def analyze(url: str, progress=None) -> dict:
+    """Uzun videoni bo'laklarga bo'lib tahlil qiladi (bepul limitga sig'ishi uchun)."""
+    if not config.GEMINI_API_KEY:
+        raise ClipError("GEMINI_API_KEY sozlanmagan")
+    chunk = config.GEMINI_CHUNK_SEC
+    dur = await video_duration(url)
+    if dur and dur <= chunk * 1.2:
+        ranges = [(None, None)]
+    else:
+        n = int((dur or chunk * 12) // chunk) + 1
+        ranges = [(i * chunk, (i + 1) * chunk) for i in range(n)]
+
+    speakers: dict[str, dict] = {}   # desc -> speaker (bo'laklar bo'ylab birlashtirish)
+    owner_clips, other_clips = [], []
+    owner_seen = False
+    for i, (a, b) in enumerate(ranges, 1):
+        if progress and len(ranges) > 1:
+            await progress(f"🧠 Tahlil: {i}/{len(ranges)}-qism ({a // 60}-{b // 60} daqiqa)...")
+        try:
+            res = await _analyze_chunk(url, a, b)
+        except QuotaError:
+            if owner_clips or other_clips:
+                break  # bor natija bilan davom etamiz
+            raise
+        except ClipError:
+            if dur is None and i > 1:
+                break  # davomiylik noma'lum — video tugagan bo'lishi mumkin
+            raise
+        sp_desc = {sp.get("id"): sp.get("desc", sp.get("id")) for sp in res.get("speakers", [])}
+        owner = res.get("owner")
+        for c in res["clips"]:
+            c["chunk"] = i
+            if owner and c.get("speaker") == owner:
+                c["speaker"] = "ME"
+                owner_clips.append(c)
+            else:
+                d = sp_desc.get(c.get("speaker"), c.get("speaker", "?"))
+                key = d.lower().strip()
+                speakers.setdefault(key, {"id": f"P{len(speakers) + 1}", "desc": d})
+                c["speaker"] = speakers[key]["id"]
+                other_clips.append(c)
+        owner_seen = owner_seen or bool(owner)
+        if dur is None and not res["clips"] and i > 1:
+            break
+        if i < len(ranges):
+            await asyncio.sleep(config.GEMINI_CHUNK_PAUSE)
+
+    def spread(clips):
+        # har bir qismdan navbat bilan — butun video bo'ylab eng yaxshilari
+        by = {}
+        for c in clips:
+            by.setdefault(c["chunk"], []).append(c)
+        out = []
+        while any(by.values()):
+            for k in sorted(by):
+                if by[k]:
+                    out.append(by[k].pop(0))
+        return out
+
+    if owner_clips:
+        return {"owner": "ME", "speakers": [{"id": "ME", "desc": "Siz"}], "clips": spread(owner_clips)}
+    return {"owner": None, "speakers": list(speakers.values()), "clips": spread(other_clips)}
 
 
 def _cookies_file(work: Path) -> list[str]:
