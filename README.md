@@ -37,3 +37,15 @@ Boshqa hosting uchun [local Bot API server](https://github.com/tdlib/telegram-bo
 ```
 TELEGRAM_API_SERVER=http://localhost:8081
 ```
+
+## YouTube -> Reels kliplar
+
+Botga YouTube link yuborasiz → Gemini videoni ko'radi, spikerlarni ajratadi → "qaysi biri siz?" → sizning eng zo'r 25-60 s bo'laklaringizni 9:16 qilib (kadr yuzingizga qarab), tepasiga hook yozuvi bilan qaytaradi.
+
+Variables:
+- `GEMINI_API_KEY` — https://aistudio.google.com/apikey (bepul tier bor)
+- `GEMINI_MODEL` — ixtiyoriy, default `gemini-flash-latest`
+- `CLIPS_MAX` — bitta videodan nechta klip (default 5)
+- `YT_COOKIES` — YouTube serverdan yuklashni bloklasa: brauzerdan eksport qilingan `cookies.txt` matni
+
+Video **public** yoki **unlisted** bo'lishi kerak (Gemini private videoni ko'rmaydi).

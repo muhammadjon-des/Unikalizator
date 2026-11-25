@@ -2,7 +2,7 @@
 FROM aiogram/telegram-bot-api:latest AS tgapi
 
 FROM python:3.12-alpine
-RUN apk add --no-cache ffmpeg libstdc++ openssl zlib curl
+RUN apk add --no-cache ffmpeg libstdc++ openssl zlib curl nodejs font-dejavu
 COPY --from=tgapi /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
 WORKDIR /app
 COPY requirements.txt .

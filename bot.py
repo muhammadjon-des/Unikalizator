@@ -17,6 +17,7 @@ from aiogram.types import (
 
 import config
 from instagram import InstagramClient, InstagramError
+import clipper
 from uniquifier import make_variants
 
 logging.basicConfig(level=logging.INFO)
@@ -82,6 +83,7 @@ async def start(m: Message):
     await m.answer(
         "🎬 <b>Unikalizator</b>\n\n"
         "Video yuboring — 3-5 ta unikal nusxasini qaytaraman.\n"
+        "🎙 YouTube link yuboring — undan siz gapirgan eng zo'r joylarni Reels qilib kesaman.\n"
         "💡 Sifat buzilmasligi uchun videoni <b>fayl</b> qilib yuboring.",
         parse_mode="HTML",
     )
@@ -294,3 +296,87 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# ---------------- YouTube -> Reels ----------------
+# chat_id -> {"url", "speakers", "clips"}
+YT_JOBS: dict[int, dict] = {}
+
+
+@router.message(F.text.regexp(clipper.YOUTUBE_RE))
+async def got_youtube(m: Message, state: FSMContext):
+    if not allowed(m.from_user):
+        return
+    await state.clear()
+    url = clipper.YOUTUBE_RE.search(m.text).group(0)
+    if not url.startswith("http"):
+        url = "https://" + url
+    status = await m.answer("🧠 Video tahlil qilinmoqda (Gemini)... 1-3 daqiqa")
+    try:
+        res = await clipper.analyze(url)
+    except clipper.ClipError as e:
+        return await status.edit_text(f"❌ Tahlil xatosi: {e}")
+    speakers = res.get("speakers") or []
+    if not res["clips"]:
+        return await status.edit_text("Mos bo'lak topilmadi 🤷")
+    YT_JOBS[m.chat.id] = {"url": url, **res}
+    if len(speakers) <= 1:
+        sid = speakers[0]["id"] if speakers else res["clips"][0]["speaker"]
+        return await cut_clips(status, m.bot, m.chat.id, sid)
+    rows = [[(f"{sp['id']}: {sp.get('desc', '')}"[:60], f"sp:{sp['id']}")] for sp in speakers]
+    await status.edit_text("Videoda bir nechta odam bor. Qaysi biri siz?", reply_markup=kb(rows))
+
+
+@router.callback_query(F.data.startswith("sp:"))
+async def pick_speaker(c: CallbackQuery):
+    await c.answer()
+    await cut_clips(c.message, c.bot, c.message.chat.id, c.data[3:])
+
+
+async def cut_clips(status: Message, bot: Bot, chat_id: int, speaker: str):
+    job = YT_JOBS.pop(chat_id, None)
+    if not job:
+        return await status.edit_text("Eski so'rov. Linkni qayta yuboring.")
+    clips = [c for c in job["clips"] if c.get("speaker") == speaker][: config.CLIPS_MAX]
+    if not clips:
+        return await status.edit_text("Bu odam uchun mos bo'lak topilmadi.")
+    work = WORK / uuid.uuid4().hex
+    work.mkdir(parents=True, exist_ok=True)
+
+    async def say(t):
+        try:
+            await status.edit_text(t)
+        except Exception:
+            pass
+
+    try:
+        if job_lock.locked():
+            await say("⏳ Navbatda (oldingi ish tugashini kutyapman)...")
+        async with job_lock:
+            ok = 0
+            for i, clip in enumerate(clips, 1):
+                await say(f"✂️ {i}/{len(clips)} klip kesilmoqda...")
+                try:
+                    out = await clipper.make_clip(job["url"], clip, work)
+                except clipper.ClipError as e:
+                    msg = str(e)
+                    if "Sign in" in msg or "bot" in msg.lower():
+                        msg = "YouTube bloklayapti — YT_COOKIES kerak (README)"
+                    await status.answer(f"❌ {i}-klip: {msg[:300]}")
+                    continue
+                s, e = int(clip["start"]), int(clip["end"])
+                await status.answer_video(
+                    FSInputFile(out, filename=f"reel_{i}.mp4"),
+                    caption=f"#{i} • {s // 60}:{s % 60:02d}–{e // 60}:{e % 60:02d}\n"
+                            f"<b>{clip.get('hook', '')}</b>\n{clip.get('why', '')}",
+                    parse_mode="HTML",
+                    width=1080, height=1920, supports_streaming=True,
+                )
+                ok += 1
+            await say(f"✅ Tayyor: {ok}/{len(clips)} ta reel.\n"
+                      "Yoqqanini botga qayta yuborsangiz — unikal nusxa qilib Trial Reels'ga joylayman.")
+    except Exception as e:
+        logging.exception("clip job failed")
+        await say(f"❌ Xato: {e}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)

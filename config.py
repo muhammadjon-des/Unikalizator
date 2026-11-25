@@ -26,3 +26,9 @@ TRIAL_STRATEGY = os.getenv("TRIAL_STRATEGY", "MANUAL")
 # Instagram video_url uchun ochiq domen (Railway o'zi beradi) va port
 PUBLIC_DOMAIN = os.getenv("PUBLIC_DOMAIN") or os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 PORT = int(os.getenv("PORT", "8080"))
+
+# YouTube -> Reels kliplar
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+YT_COOKIES = os.getenv("YT_COOKIES", "")  # cookies.txt matni (YouTube bloklasa)
+CLIPS_MAX = int(os.getenv("CLIPS_MAX", "5"))
