@@ -370,7 +370,7 @@ async def got_youtube(m: Message, state: FSMContext):
     url = clipper.YOUTUBE_RE.search(m.text).group(0)
     if not url.startswith("http"):
         url = "https://" + url
-    status = await m.answer("🧠 Video tahlil qilinmoqda (Gemini)... 1-3 daqiqa")
+    status = await m.answer("🧠 Video tahlil qilinmoqda (Gemini)... 1-5 daqiqa")
     try:
         res = await clipper.analyze(url)
     except clipper.ClipError as e:

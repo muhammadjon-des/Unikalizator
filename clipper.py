@@ -106,6 +106,32 @@ def _parse_json(text: str) -> dict:
     return json.loads(m.group(0))
 
 
+async def _gemini(body: dict) -> dict:
+    """Band bo'lsa qayta urinadi va zaxira modelga o'tadi."""
+    models = [config.GEMINI_MODEL] + [m for m in config.GEMINI_FALLBACK if m != config.GEMINI_MODEL]
+    last = "noma'lum xato"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(900, connect=30)) as http:
+        for model in models:
+            api = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            for attempt in range(3):
+                r = await http.post(api, headers={"x-goog-api-key": config.GEMINI_API_KEY}, json=body)
+                try:
+                    data = r.json()
+                except Exception:
+                    data = {"error": {"message": f"HTTP {r.status_code}: {r.text[:200]}"}}
+                if "error" not in data:
+                    return data
+                err = data["error"]
+                last = err.get("message", str(err))
+                busy = r.status_code in (429, 500, 503) or "demand" in last.lower() or "overloaded" in last.lower()
+                if r.status_code == 404:
+                    break  # bunday model yo'q — keyingisiga
+                if not busy:
+                    raise ClipError(f"Gemini ({model}): {last}")
+                await asyncio.sleep(10 * (2 ** attempt))  # 10, 20, 40 s
+    raise ClipError(f"Gemini hozir band, keyinroq urinib ko'ring ({last[:150]})")
+
+
 async def analyze(url: str) -> dict:
     """Gemini'dan spikerlar va klip nomzodlarini oladi."""
     if not config.GEMINI_API_KEY:
@@ -125,15 +151,7 @@ async def analyze(url: str) -> dict:
             "temperature": 0.4,
         },
     }
-    api = f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(900, connect=30)) as http:
-        r = await http.post(api, headers={"x-goog-api-key": config.GEMINI_API_KEY}, json=body)
-    try:
-        data = r.json()
-    except Exception:
-        raise ClipError(f"Gemini HTTP {r.status_code}: {r.text[:300]}")
-    if "error" in data:
-        raise ClipError(f"Gemini: {data['error'].get('message', data['error'])}")
+    data = await _gemini(body)
     try:
         text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
     except (KeyError, IndexError):

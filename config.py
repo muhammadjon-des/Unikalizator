@@ -30,6 +30,9 @@ PORT = int(os.getenv("PORT", "8080"))
 # YouTube -> Reels kliplar
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+# Asosiy model band bo'lsa — shular sinab ko'riladi
+GEMINI_FALLBACK = [m.strip() for m in os.getenv(
+    "GEMINI_FALLBACK", "gemini-flash-lite-latest,gemini-pro-latest").split(",") if m.strip()]
 YT_COOKIES = os.getenv("YT_COOKIES", "")  # cookies.txt matni (YouTube bloklasa)
 CLIPS_MAX = int(os.getenv("CLIPS_MAX", "5"))
 
