@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import shutil
 import uuid
@@ -171,6 +172,12 @@ async def got_video(m: Message, state: FSMContext):
     media = m.video or m.document
     if m.document and not (m.document.mime_type or "").startswith("video"):
         return await m.answer("Bu video emas.")
+    pending = load_pending(m.chat.id)
+    if pending:
+        if media.file_size and media.file_size > DOWNLOAD_LIMIT:
+            return await m.answer(f"⚠️ Fayl {DOWNLOAD_LIMIT // MB} MB dan katta.")
+        status = await m.answer("⬇️ Podkast fayli olinmoqda...")
+        return asyncio.create_task(cut_pending(status, m.bot, m.chat.id, media.file_id, pending))
     if media.file_size and media.file_size > DOWNLOAD_LIMIT:
         return await m.answer(
             f"⚠️ Video {media.file_size // MB} MB. Bot {DOWNLOAD_LIMIT // MB} MB gacha qabul qiladi.\n"
@@ -360,6 +367,43 @@ async def main():
 # ---------------- YouTube -> Reels ----------------
 # chat_id -> {"url", "speakers", "clips"}
 YT_JOBS: dict[int, dict] = {}
+PENDING_DIR = Path(config.DATA_DIR) / "pending"   # YouTube bloklasa: fayl kutilayotgan kliplar
+
+
+def save_pending(chat_id: int, clips: list):
+    PENDING_DIR.mkdir(parents=True, exist_ok=True)
+    (PENDING_DIR / f"{chat_id}.json").write_text(json.dumps(clips))
+
+
+def load_pending(chat_id: int):
+    p = PENDING_DIR / f"{chat_id}.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def drop_pending(chat_id: int):
+    (PENDING_DIR / f"{chat_id}.json").unlink(missing_ok=True)
+
+
+async def send_reels(status: Message, clips: list, make, say):
+    ok = 0
+    for i, clip in enumerate(clips, 1):
+        await say(f"✂️ {i}/{len(clips)} klip kesilmoqda...")
+        try:
+            out = await make(clip)
+        except clipper.ClipError as e:
+            await status.answer(f"❌ {i}-klip: {str(e)[:300]}")
+            continue
+        s, e = int(clip["start"]), int(clip["end"])
+        await status.answer_video(
+            FSInputFile(out, filename=f"reel_{i}.mp4"),
+            caption=f"#{i} • {s // 60}:{s % 60:02d}–{e // 60}:{e % 60:02d}\n"
+                    f"<b>{clip.get('hook', '')}</b>\n{clip.get('why', '')}",
+            parse_mode="HTML",
+            width=1080, height=1920, supports_streaming=True,
+        )
+        ok += 1
+    await say(f"✅ Tayyor: {ok}/{len(clips)} ta reel.\n"
+              "Yoqqanini botga qayta yuborsangiz — unikal nusxa qilib Trial Reels'ga joylayman.")
 
 
 @router.message(F.text.regexp(clipper.YOUTUBE_RE))
@@ -423,33 +467,68 @@ async def cut_clips(status: Message, bot: Bot, chat_id: int, speaker: str):
         if job_lock.locked():
             await say("⏳ Navbatda (oldingi ish tugashini kutyapman)...")
         async with job_lock:
-            ok = 0
-            for i, clip in enumerate(clips, 1):
-                await say(f"✂️ {i}/{len(clips)} klip kesilmoqda...")
-                try:
-                    out = await clipper.make_clip(job["url"], clip, work)
-                except clipper.ClipError as e:
-                    msg = str(e)
-                    if "Sign in" in msg or "bot" in msg.lower():
-                        msg = "YouTube bloklayapti — YT_COOKIES kerak (README)"
-                    await status.answer(f"❌ {i}-klip: {msg[:300]}")
-                    continue
-                s, e = int(clip["start"]), int(clip["end"])
-                await status.answer_video(
-                    FSInputFile(out, filename=f"reel_{i}.mp4"),
-                    caption=f"#{i} • {s // 60}:{s % 60:02d}–{e // 60}:{e % 60:02d}\n"
-                            f"<b>{clip.get('hook', '')}</b>\n{clip.get('why', '')}",
-                    parse_mode="HTML",
-                    width=1080, height=1920, supports_streaming=True,
+            # Avval YouTube'dan birinchi klipni sinab ko'ramiz
+            await say("✂️ YouTube'dan yuklanmoqda...")
+            try:
+                first = await clipper.make_clip(job["url"], clips[0], work)
+            except clipper.ClipError as e:
+                if not clipper.is_blocked(str(e)):
+                    raise
+                save_pending(chat_id, clips)
+                lines = "\n".join(
+                    f"• {int(c['start']) // 60}:{int(c['start']) % 60:02d} — {c.get('hook', '')}" for c in clips
                 )
-                ok += 1
-            await say(f"✅ Tayyor: {ok}/{len(clips)} ta reel.\n"
-                      "Yoqqanini botga qayta yuborsangiz — unikal nusxa qilib Trial Reels'ga joylayman.")
+                return await say(
+                    f"✅ Tahlil tayyor, {len(clips)} ta zo'r joy topildi:\n{lines}\n\n"
+                    "⚠️ YouTube serverga videoni bermayapti.\n"
+                    "👉 Shu podkastning video faylini (asl fayl) shu yerga yuboring — kliplarni undan kesaman."
+                )
+            done = {id(clips[0]): first}
+
+            async def make(clip):
+                if id(clip) in done:
+                    return done.pop(id(clip))
+                return await clipper.make_clip(job["url"], clip, work)
+
+            await send_reels(status, clips, make, say)
     except Exception as e:
         logging.exception("clip job failed")
         await say(f"❌ Xato: {e}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+async def cut_pending(status: Message, bot: Bot, chat_id: int, file_id: str, clips: list):
+    work = WORK / uuid.uuid4().hex
+    work.mkdir(parents=True, exist_ok=True)
+
+    async def say(t):
+        try:
+            await status.edit_text(t)
+        except Exception:
+            pass
+
+    try:
+        async with job_lock:
+            src = work / "podcast.mp4"
+            if config.TELEGRAM_API_SERVER:
+                f = await bot.get_file(file_id)
+                shutil.move(f.file_path, src)
+            else:
+                await bot.download(file_id, destination=src)
+            await send_reels(status, clips, lambda c: clipper.cut_from_file(src, c, work), say)
+            drop_pending(chat_id)
+    except Exception as e:
+        logging.exception("pending cut failed")
+        await say(f"❌ Xato: {e}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+@router.message(Command("bekor"))
+async def cancel_pending(m: Message):
+    drop_pending(m.chat.id)
+    await m.answer("Kutilayotgan kliplar bekor qilindi. Endi yuborgan videoingiz oddiy unikalizatsiyaga ketadi.")
 
 
 @router.message(F.text)

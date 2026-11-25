@@ -365,3 +365,21 @@ async def make_clip(url: str, clip: dict, work: Path) -> Path:
     end = clip["end"] + 0.4
     raw = await download_section(url, start, end, work)
     return await render(raw, clip, start, work / f"reel_{uuid.uuid4().hex[:8]}.mp4")
+
+
+def is_blocked(err: str) -> bool:
+    e = err.lower()
+    return "sign in" in e or "not a bot" in e or "429" in e or "cookies" in e
+
+
+async def cut_from_file(src: Path, clip: dict, work: Path) -> Path:
+    """YouTube o'rniga foydalanuvchi yuborgan asl fayldan kesish."""
+    start = max(clip["start"] - 0.3, 0)
+    dur = clip["end"] + 0.4 - start
+    raw = work / f"seg_{uuid.uuid4().hex[:8]}.mp4"
+    await _run(
+        "ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(src), "-t", f"{dur:.2f}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-c:a", "aac", "-b:a", "192k",
+        str(raw),
+    )
+    return await render(raw, clip, start, work / f"reel_{uuid.uuid4().hex[:8]}.mp4")
