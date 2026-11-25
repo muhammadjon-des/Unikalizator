@@ -34,7 +34,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_FALLBACK = [m.strip() for m in os.getenv(
     "GEMINI_FALLBACK", "gemini-flash-lite-latest,gemini-pro-latest").split(",") if m.strip()]
 YT_COOKIES = os.getenv("YT_COOKIES", "")  # cookies.txt matni (YouTube bloklasa)
-CLIPS_MAX = int(os.getenv("CLIPS_MAX", "5"))
+CLIPS_MAX = int(os.getenv("CLIPS_MAX", "5"))  # bir martada nechta klip; qolganlari "Yana" tugmasi bilan
 
 # Doimiy disk (Railway volume) — "men" rasmlari shu yerda saqlanadi
 DATA_DIR = os.getenv("DATA_DIR", "/data")

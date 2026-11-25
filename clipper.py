@@ -55,7 +55,9 @@ Return ONLY JSON:
 ME_PROMPT = """
 REFERENCE PHOTOS: the image(s) before the video show the channel OWNER (same face; clothes and hair may differ).
 Decide which speaker in the video is the owner by comparing faces. Add "owner": "<speaker id>" to the top-level JSON
-(or "owner": null if the owner does not appear). You may then return clips ONLY for the owner.
+(or "owner": null if the owner does not appear).
+If the owner appears: return clips ONLY where the OWNER himself is talking (not when he is listening or asking a
+short question), and return AS MANY good owner moments as exist in this part — up to 8, best first.
 """
 
 ME_DIR = Path(config.DATA_DIR) / "me"

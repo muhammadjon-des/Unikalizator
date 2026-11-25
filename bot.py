@@ -367,6 +367,7 @@ async def main():
 # ---------------- YouTube -> Reels ----------------
 # chat_id -> {"url", "speakers", "clips"}
 YT_JOBS: dict[int, dict] = {}
+MORE: dict[int, dict] = {}   # "Yana" tugmasi uchun qolgan nomzodlar
 PENDING_DIR = Path(config.DATA_DIR) / "pending"   # YouTube bloklasa: fayl kutilayotgan kliplar
 
 
@@ -451,7 +452,8 @@ async def cut_clips(status: Message, bot: Bot, chat_id: int, speaker: str):
     job = YT_JOBS.pop(chat_id, None)
     if not job:
         return await status.edit_text("Eski so'rov. Linkni qayta yuboring.")
-    clips = [c for c in job["clips"] if c.get("speaker") == speaker][: config.CLIPS_MAX]
+    all_clips = [c for c in job["clips"] if c.get("speaker") == speaker]
+    clips, rest = all_clips[: config.CLIPS_MAX], all_clips[config.CLIPS_MAX:]
     if not clips:
         return await status.edit_text("Bu odam uchun mos bo'lak topilmadi.")
     work = WORK / uuid.uuid4().hex
@@ -491,6 +493,12 @@ async def cut_clips(status: Message, bot: Bot, chat_id: int, speaker: str):
                 return await clipper.make_clip(job["url"], clip, work)
 
             await send_reels(status, clips, make, say)
+            if rest:
+                MORE[chat_id] = {"url": job["url"], "clips": rest}
+                await status.answer(
+                    f"Podkastda yana {len(rest)} ta siz gapirgan joy bor.",
+                    reply_markup=kb([[(f"➕ Yana {min(len(rest), config.CLIPS_MAX)} ta klip", "more")]]),
+                )
     except Exception as e:
         logging.exception("clip job failed")
         await say(f"❌ Xato: {e}")
@@ -523,6 +531,19 @@ async def cut_pending(status: Message, bot: Bot, chat_id: int, file_id: str, cli
         await say(f"❌ Xato: {e}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+@router.callback_query(F.data == "more")
+async def more_clips(c: CallbackQuery):
+    await c.answer()
+    job = MORE.pop(c.message.chat.id, None)
+    if not job:
+        return await c.message.edit_text("Qolgan kliplar topilmadi — linkni qayta yuboring.")
+    await c.message.edit_text("✂️ Keyingi kliplar tayyorlanmoqda...")
+    YT_JOBS[c.message.chat.id] = {"url": job["url"], "clips": job["clips"]}
+    for cl in job["clips"]:
+        cl["speaker"] = cl.get("speaker") or "ME"
+    await cut_clips(c.message, c.bot, c.message.chat.id, job["clips"][0]["speaker"])
 
 
 @router.message(Command("bekor"))
