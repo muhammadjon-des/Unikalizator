@@ -52,6 +52,19 @@ Return ONLY JSON:
 """
 
 
+ME_PROMPT = """
+REFERENCE PHOTOS: the image(s) before the video show the channel OWNER (same face; clothes and hair may differ).
+Decide which speaker in the video is the owner by comparing faces. Add "owner": "<speaker id>" to the top-level JSON
+(or "owner": null if the owner does not appear). You may then return clips ONLY for the owner.
+"""
+
+ME_DIR = Path(config.DATA_DIR) / "me"
+
+
+def me_photos() -> list[Path]:
+    return sorted(ME_DIR.glob("*.jpg")) if ME_DIR.exists() else []
+
+
 class ClipError(Exception):
     pass
 
@@ -84,13 +97,15 @@ async def analyze(url: str) -> dict:
     """Gemini'dan spikerlar va klip nomzodlarini oladi."""
     if not config.GEMINI_API_KEY:
         raise ClipError("GEMINI_API_KEY sozlanmagan")
+    import base64
+    parts = []
+    photos = me_photos()
+    for p in photos:
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(p.read_bytes()).decode()}})
+    parts.append({"file_data": {"file_uri": url, "mime_type": "video/*"}})
+    parts.append({"text": PROMPT + (ME_PROMPT if photos else "")})
     body = {
-        "contents": [{
-            "parts": [
-                {"file_data": {"file_uri": url, "mime_type": "video/*"}},
-                {"text": PROMPT},
-            ]
-        }],
+        "contents": [{"parts": parts}],
         "generationConfig": {
             "responseMimeType": "application/json",
             "mediaResolution": "MEDIA_RESOLUTION_LOW",  # uzun videolar uchun

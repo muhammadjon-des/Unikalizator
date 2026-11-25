@@ -107,6 +107,46 @@ async def limit(m: Message):
         await m.answer(f"Xato: {e}")
 
 
+@router.message(Command("men"))
+async def me_help(m: Message):
+    if not allowed(m.from_user):
+        return
+    n = len(clipper.me_photos())
+    await m.answer(
+        f"📸 Saqlangan rasmlaringiz: {n}/3\n\n"
+        "Yuzingiz aniq ko'rinadigan rasmni <b>«men»</b> izohi bilan yuboring — "
+        "YouTube videolarda sizni o'zim taniyman. 1-3 ta turli rasm yaxshiroq.\n"
+        "/men_tozala — rasmlarni o'chirish",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("men_tozala"))
+async def me_clear(m: Message):
+    if not allowed(m.from_user):
+        return
+    for p in clipper.me_photos():
+        p.unlink(missing_ok=True)
+    await m.answer("🗑 Rasmlar o'chirildi.")
+
+
+@router.message(F.photo, F.caption.lower().in_({"men", "/men", "bu men"}))
+async def me_photo(m: Message):
+    if not allowed(m.from_user):
+        return
+    clipper.ME_DIR.mkdir(parents=True, exist_ok=True)
+    photos = clipper.me_photos()
+    if len(photos) >= 3:
+        photos[0].unlink(missing_ok=True)  # eng eskisini almashtiramiz
+    dst = clipper.ME_DIR / f"{uuid.uuid4().hex[:8]}.jpg"
+    f = await m.bot.get_file(m.photo[-1].file_id)
+    if config.TELEGRAM_API_SERVER:
+        shutil.copy(f.file_path, dst)
+    else:
+        await m.bot.download(m.photo[-1].file_id, destination=dst)
+    await m.answer(f"✅ Saqlandi ({len(clipper.me_photos())}/3). Endi YouTube videolarda sizni o'zim taniyman.")
+
+
 @router.message(F.video | F.document)
 async def got_video(m: Message, state: FSMContext):
     if not allowed(m.from_user):
@@ -323,6 +363,10 @@ async def got_youtube(m: Message, state: FSMContext):
     if len(speakers) <= 1:
         sid = speakers[0]["id"] if speakers else res["clips"][0]["speaker"]
         return await cut_clips(status, m.bot, m.chat.id, sid)
+    owner = res.get("owner")
+    if owner and any(c.get("speaker") == owner for c in res["clips"]):
+        await status.edit_text("🙂 Sizni rasmingizdan tanidim. Kliplar kesilmoqda...")
+        return await cut_clips(status, m.bot, m.chat.id, owner)
     rows = [[(f"{sp['id']}: {sp.get('desc', '')}"[:60], f"sp:{sp['id']}")] for sp in speakers]
     await status.edit_text("Videoda bir nechta odam bor. Qaysi biri siz?", reply_markup=kb(rows))
 

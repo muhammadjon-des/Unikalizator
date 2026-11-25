@@ -32,3 +32,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 YT_COOKIES = os.getenv("YT_COOKIES", "")  # cookies.txt matni (YouTube bloklasa)
 CLIPS_MAX = int(os.getenv("CLIPS_MAX", "5"))
+
+# Doimiy disk (Railway volume) — "men" rasmlari shu yerda saqlanadi
+DATA_DIR = os.getenv("DATA_DIR", "/data")
