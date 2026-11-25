@@ -38,11 +38,28 @@ async def serve_file(request):
     return web.FileResponse(path, headers={"Content-Type": "video/mp4"})
 
 
+async def upload_me(request):
+    """Egasining rasmini diskka yuklash (faqat UPLOAD_SECRET bilan)."""
+    from aiohttp import web
+    import hmac
+    secret = config.UPLOAD_SECRET
+    if not secret or not hmac.compare_digest(request.headers.get("X-Secret", ""), secret):
+        raise web.HTTPForbidden()
+    data = await request.read()
+    if not data or len(data) > 5 * 1024 * 1024:
+        raise web.HTTPBadRequest()
+    clipper.ME_DIR.mkdir(parents=True, exist_ok=True)
+    dst = clipper.ME_DIR / f"{uuid.uuid4().hex[:8]}.jpg"
+    dst.write_bytes(data)
+    return web.json_response({"ok": True, "total": len(clipper.me_photos())})
+
+
 async def start_file_server():
     from aiohttp import web
     app = web.Application()
     app.router.add_get("/f/{name}", serve_file)
     app.router.add_get("/", lambda r: web.Response(text="ok"))
+    app.router.add_post("/me-upload", upload_me)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", config.PORT).start()
@@ -113,7 +130,7 @@ async def me_help(m: Message):
         return
     n = len(clipper.me_photos())
     await m.answer(
-        f"📸 Saqlangan rasmlaringiz: {n}/3\n\n"
+        f"📸 Saqlangan rasmlaringiz: {n}\n\n"
         "Yuzingiz aniq ko'rinadigan rasmni <b>«men»</b> izohi bilan yuboring — "
         "YouTube videolarda sizni o'zim taniyman. 1-3 ta turli rasm yaxshiroq.\n"
         "/men_tozala — rasmlarni o'chirish",
@@ -125,7 +142,7 @@ async def me_help(m: Message):
 async def me_clear(m: Message):
     if not allowed(m.from_user):
         return
-    for p in clipper.me_photos():
+    for p in clipper.user_photos():
         p.unlink(missing_ok=True)
     await m.answer("🗑 Rasmlar o'chirildi.")
 
@@ -135,7 +152,7 @@ async def me_photo(m: Message):
     if not allowed(m.from_user):
         return
     clipper.ME_DIR.mkdir(parents=True, exist_ok=True)
-    photos = clipper.me_photos()
+    photos = clipper.user_photos()
     if len(photos) >= 3:
         photos[0].unlink(missing_ok=True)  # eng eskisini almashtiramiz
     dst = clipper.ME_DIR / f"{uuid.uuid4().hex[:8]}.jpg"
@@ -144,7 +161,7 @@ async def me_photo(m: Message):
         shutil.copy(f.file_path, dst)
     else:
         await m.bot.download(m.photo[-1].file_id, destination=dst)
-    await m.answer(f"✅ Saqlandi ({len(clipper.me_photos())}/3). Endi YouTube videolarda sizni o'zim taniyman.")
+    await m.answer(f"✅ Saqlandi (jami {len(clipper.me_photos())} ta). Endi YouTube videolarda sizni o'zim taniyman.")
 
 
 @router.message(F.video | F.document)

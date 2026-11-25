@@ -61,7 +61,20 @@ Decide which speaker in the video is the owner by comparing faces. Add "owner": 
 ME_DIR = Path(config.DATA_DIR) / "me"
 
 
+REPO_ME_DIR = Path(__file__).parent / "me"  # repoda turgan egasining rasmlari
+
+
 def me_photos() -> list[Path]:
+    """Diskdagi (bot orqali yuborilgan) + repodagi rasmlar, ko'pi bilan 8 ta."""
+    out = []
+    for d in (ME_DIR, REPO_ME_DIR):
+        if d.exists():
+            out += sorted(d.glob("*.jpg"))
+    return out[:8]
+
+
+def user_photos() -> list[Path]:
+    """Faqat bot orqali yuborilganlar (o'chirish/limit uchun)."""
     return sorted(ME_DIR.glob("*.jpg")) if ME_DIR.exists() else []
 
 

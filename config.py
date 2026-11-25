@@ -35,3 +35,4 @@ CLIPS_MAX = int(os.getenv("CLIPS_MAX", "5"))
 
 # Doimiy disk (Railway volume) — "men" rasmlari shu yerda saqlanadi
 DATA_DIR = os.getenv("DATA_DIR", "/data")
+UPLOAD_SECRET = os.getenv("UPLOAD_SECRET", "")  # /me-upload uchun maxfiy kalit
