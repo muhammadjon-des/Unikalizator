@@ -427,6 +427,9 @@ async def got_youtube(m: Message, state: FSMContext):
         res = await clipper.analyze(url, progress)
     except clipper.ClipError as e:
         return await status.edit_text(f"❌ Tahlil xatosi: {e}")
+    except Exception as e:
+        logging.exception("analyze crashed")
+        return await status.edit_text(f"❌ Kutilmagan xato: {str(e)[:200]}")
     speakers = res.get("speakers") or []
     if not res["clips"]:
         return await status.edit_text("Mos bo'lak topilmadi 🤷")

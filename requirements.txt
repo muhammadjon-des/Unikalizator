@@ -2,3 +2,4 @@ aiogram>=3.13,<4
 python-dotenv>=1.0
 httpx>=0.27
 yt-dlp[default]>=2025.11
+json-repair>=0.30

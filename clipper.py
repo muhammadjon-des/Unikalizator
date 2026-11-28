@@ -8,6 +8,7 @@ YouTube podkastdan Reels kliplar yasash.
 """
 import asyncio
 import json
+import logging
 import re
 import textwrap
 import uuid
@@ -105,7 +106,15 @@ def _parse_json(text: str) -> dict:
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         raise ClipError("Gemini javobi JSON emas")
-    return json.loads(m.group(0))
+    try:
+        return json.loads(m.group(0))
+    except json.JSONDecodeError:
+        # Gemini ba'zan vergul tushirib qoldiradi — tuzatib o'qiymiz
+        from json_repair import repair_json
+        fixed = repair_json(m.group(0), return_objects=True)
+        if not isinstance(fixed, dict):
+            raise ClipError("Gemini javobi buzilgan JSON")
+        return fixed
 
 
 class QuotaError(ClipError):
@@ -232,6 +241,7 @@ async def analyze(url: str, progress=None) -> dict:
     speakers: dict[str, dict] = {}   # desc -> speaker (bo'laklar bo'ylab birlashtirish)
     owner_clips, other_clips = [], []
     owner_seen = False
+    failed = 0
     for i, (a, b) in enumerate(ranges, 1):
         import logging
         logging.info("Gemini tahlil: %s/%s qism (%s-%s s)", i, len(ranges), a, b)
@@ -243,10 +253,20 @@ async def analyze(url: str, progress=None) -> dict:
             if owner_clips or other_clips:
                 break  # bor natija bilan davom etamiz
             raise
-        except ClipError:
+        except ClipError as e:
             if dur is None and i > 1:
                 break  # davomiylik noma'lum — video tugagan bo'lishi mumkin
-            raise
+            logging.warning("%s-qism tahlil xatosi, o'tkazib yuborildi: %s", i, e)
+            failed += 1
+            if failed >= 3 and not (owner_clips or other_clips):
+                raise
+            continue
+        except Exception as e:  # kutilmagan xato — shu qismni o'tkazamiz
+            logging.exception("%s-qism kutilmagan xato", i)
+            failed += 1
+            if failed >= 3 and not (owner_clips or other_clips):
+                raise ClipError(f"Tahlil bir necha marta xato berdi: {e}")
+            continue
         sp_desc = {sp.get("id"): sp.get("desc", sp.get("id")) for sp in res.get("speakers", [])}
         owner = res.get("owner")
         for c in res["clips"]:
